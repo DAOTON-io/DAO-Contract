@@ -207,8 +207,8 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
   
 }
 
-(int, slice, slice ,cell,int,cell) get_dao_data() method_id {
+(int, slice, slice ,cell,int) get_dao_data() method_id {
   var (dao_type, token_contract, nft_contract, content ,proposals_seq , proposals_dict) = load_data();
 
-  return (dao_type, token_contract, nft_contract,content, proposals_seq, proposals_dict);
+  return (dao_type, token_contract, nft_contract,content, proposals_seq);
 }
