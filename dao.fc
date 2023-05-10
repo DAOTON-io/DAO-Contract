@@ -137,7 +137,7 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
 
             var msg_body = begin_cell()
                       .store_uint(1, 32)
-                      .store_slice(daoton_contract) ;; dao contract id 
+                      .store_slice(dao_contract) ;; dao contract id 
                       .end_cell();
 
             msg = msg.store_ref(msg_body);
