@@ -1,5 +1,12 @@
 int error::invalid_message() asm "72 PUSHINT";
 
+int state::draft() asm "0 PUSHINT";
+int state::success() asm "1 PUSHINT";
+int state::failure() asm "2 PUSHINT"; ;; no vote or expire
+int state::executed() asm "3 PUSHINT";
+int state::cancelled() asm "4 PUSHINT";
+
+
 (int, slice, slice, cell,int, cell) load_data() inline {
   var ds = get_data().begin_parse();
  
@@ -32,7 +39,7 @@ return (dao_type, token_contract, nft_contract,content ,proposals_seq,proposals_
     .end_cell());
 }
 
-cell design_proposal(int owner,int balance,int timestamp ,int threshold_success ,int threshold_fail, cell proposals_dict, int proposal_id, int yes,int no, int abstain,cell votes,int is_related_with_nft,cell content) { 
+cell design_proposal(int owner,int balance,int timestamp ,int threshold_success ,int threshold_fail, cell proposals_dict, int proposal_id, int yes,int no, int abstain,cell votes,int is_related_with_nft,cell content , int state) { 
     ;; Serialize proposal
     var container = begin_cell()
         .store_uint(owner,256) ;; proposal creater = master of proposal for cancel , execute ect.
@@ -46,13 +53,14 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
             .store_coins(threshold_fail)
             .store_uint(is_related_with_nft, 2) ;; nft relation true | false
             .store_ref(content) ;; description , question text
-        .end_cell()) ;; votes
-        .store_dict(votes);
+        .end_cell())
+        .store_dict(votes) ;; votes
+        .store_uint(state,4); ;; state;
 
   return udict_set_builder(proposals_dict,32, proposal_id , container);
 }
 
-(int,int,int,int,int,int,int,int,cell,int,cell) get_proposal(int id) method_id {
+(int,int,int,int,int,int,int,int,cell,int,cell,int) get_proposal(int id) method_id {
     var (dao_type, token_contract, nft_contract, content ,proposals_seq, proposals_dict ) = load_data();
 
     var (itm, found) = proposals_dict.udict_get?(32, id);
@@ -75,12 +83,13 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
     threshold_data.end_parse();
 
     cell votes = itm~load_dict();
+    int state = itm~load_uint(4);
 
-    return (owner,balance,proposal_voted_yes,proposal_voted_no,proposal_voted_abstain,timestamp,success_threshold,fail_threshold, votes,is_related_with_nft,content);
+    return (owner,balance,proposal_voted_yes,proposal_voted_no,proposal_voted_abstain,timestamp,success_threshold,fail_threshold, votes,is_related_with_nft,content,state);
 }
 
 () execute_proposal(int proposal_id, int admin, slice target_address) impure {
- var (owner,balance,proposal_voted_yes,proposal_voted_no,proposal_voted_abstain,timestamp,success_threshold,fail_threshold,votes,is_related_with_nft,content) = get_proposal(proposal_id);
+ var (owner,balance,proposal_voted_yes,proposal_voted_no,proposal_voted_abstain,timestamp,success_threshold,fail_threshold,votes,is_related_with_nft,content,state) = get_proposal(proposal_id);
 
  throw_unless(error::invalid_message(), owner == admin);
 
@@ -154,7 +163,7 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
    int is_related_with_nft = in_msg_body~load_uint(2); ;; nft relationship true | false
    cell content = in_msg_body~load_ref();
 
-   proposals_dict = design_proposal(member,balance,timestamp, success_threshold, fail_threshold , proposals_dict,proposals_seq ,0 , 0 , 0, null(),is_related_with_nft,content);
+   proposals_dict = design_proposal(member,balance,timestamp, success_threshold, fail_threshold , proposals_dict,proposals_seq ,0 , 0 , 0, null(),is_related_with_nft,content,state::draft());
 
    save_data(dao_type, token_contract, nft_contract,content, proposals_seq + 1, proposals_dict);
    return ();
@@ -166,7 +175,12 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
   int proposal_id = in_msg_body~load_uint(32);
   int vote = in_msg_body~load_uint(2);
    
-  var (owner,balance,proposal_voted_yes,proposal_voted_no,proposal_voted_abstain,timestamp,success_threshold,fail_threshold,votes,is_related_with_nft,content) = get_proposal(proposal_id);
+  var (owner,balance,proposal_voted_yes,proposal_voted_no,proposal_voted_abstain,timestamp,success_threshold,fail_threshold,votes,is_related_with_nft,content,state) = get_proposal(proposal_id);
+
+  ;; mandatory state for voting
+  throw_unless(error::invalid_message(), state == state::draft());
+
+  if(check_timestamp(timestamp)){
 
   var (vs, vfound) = votes.udict_get?(256, member);
   throw_if(error::invalid_message(), vfound);
@@ -181,15 +195,27 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
   if(vote == 1){
     proposal_voted_yes = proposal_voted_yes + 1;
     votes = udict_set_builder(votes, 256, member, begin_cell().store_uint(1,2));
+
+    if(proposal_voted_yes >= success_threshold){
+      state = state::success();
+    }
   }
 
   ;; no vote
   if(vote == 2){
     proposal_voted_no = proposal_voted_no + 1;
     votes = udict_set_builder(votes, 256, member, begin_cell().store_uint(2,2));
+
+    if(proposal_voted_no >= fail_threshold){
+      state = state::failure();
+    }
+  }
+  }
+  else{
+    state = state::failure();
   }
   
-  proposals_dict = design_proposal(owner,balance,timestamp, success_threshold, fail_threshold , proposals_dict,proposal_id ,proposal_voted_yes , proposal_voted_no, proposal_voted_abstain,votes,is_related_with_nft,content);
+  proposals_dict = design_proposal(owner,balance,timestamp, success_threshold, fail_threshold , proposals_dict,proposal_id ,proposal_voted_yes , proposal_voted_no, proposal_voted_abstain,votes,is_related_with_nft,content,state);
 
   save_data(dao_type, token_contract, nft_contract,content, proposals_seq, proposals_dict);
   return ();
@@ -204,7 +230,16 @@ cell design_proposal(int owner,int balance,int timestamp ,int threshold_success 
 
     return ();
   }
-  
+}
+
+(int) check_timestamp(int timestamp) impure {
+  int current_timestamp = now();
+
+  if(timestamp < current_timestamp){
+    return false;
+  }
+
+  return true;
 }
 
 (int, slice, slice ,cell,int) get_dao_data() method_id {
